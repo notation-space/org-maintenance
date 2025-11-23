@@ -1,0 +1,54 @@
+name: Daily cleanup of old package versions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *' 
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Cleanup packages
+        env:
+          ORG_NAME: notation-space
+          GITHUB_TOKEN: ${{ secrets.ORG_PACKAGES_TOKEN }}
+          PACKAGES: "container/notation.space.api container/notation.space.app container/notation.space.info"
+        run: |
+          for package in $PACKAGES; do
+            type="${package%%/*}"
+            name="${package##*/}"
+            echo "🔎 Processing $type/$name"
+
+            versions=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+                             -H "Accept: application/vnd.github+json" \
+                             "https://api.github.com/orgs/$ORG_NAME/packages/$type/$name/versions?per_page=100")
+
+            if ! echo "$versions" | jq -e 'type=="array"' > /dev/null; then
+              echo "⚠️ Unexpected response for $type/$name"
+              echo "$versions"
+              continue
+            fi
+
+            ids=$(echo "$versions" | jq -r 'sort_by(.created_at) | reverse | .[5:] | .[].id')
+
+            if [[ -z "$ids" ]]; then
+              echo "✅ Nothing to delete for $type/$name"
+              continue
+            fi
+
+            for id in $ids; do
+              echo "🗑️ Deleting version $id of $type/$name"
+              curl -s -X DELETE \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/orgs/$ORG_NAME/packages/$type/$name/versions/$id" \
+                > /dev/null
+            done
+          done
